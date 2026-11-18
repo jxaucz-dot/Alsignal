@@ -17,6 +17,7 @@ import { registerMedia } from "./routes/media.ts";
 import { registerFeeds } from "./routes/feeds.ts";
 import { registerStatic } from "./routes/static.ts";
 import { registerMcp } from "./routes/mcp.ts";
+import { registerDrafts } from "./routes/drafts.ts";
 import { sendProblem } from "./http/respond.ts";
 
 /** Quiet ordinary access logs, while keeping errors that happen after the route has returned. */
@@ -95,6 +96,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerAdminAuth(app);
   // Admin pages and sign-in are site-dependent; preview identity is available on every site.
   if (ADMIN) registerAdmin(app);
+  if (ADMIN) registerDrafts(app);
   registerIngest(app);
   registerV1(app);
   registerAgent(app);
