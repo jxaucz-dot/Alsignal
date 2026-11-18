@@ -73,20 +73,38 @@ export async function addDraftVersion(id: string, input: Omit<DraftInput, "input
 }
 
 export async function createReview(id: string, actor: string) {
-  const [draft] = await sql`SELECT current_version FROM content_drafts WHERE id = ${id}`;
+  const [draft] = await sql`SELECT current_version, input_text, requested_direction, target_channels FROM content_drafts WHERE id = ${id}`;
   if (!draft) return null;
   const reviewId = newUuid();
   const [review] = await sql`
     INSERT INTO review_tasks (id, draft_id, version, reviewer) VALUES (${reviewId}, ${id}, ${draft.current_version}, ${actor})
     RETURNING *`;
   await sql`UPDATE content_drafts SET status = 'review', updated_at = now() WHERE id = ${id}`;
+  await notifyReviewOpened({ reviewId, draftId: id, version: Number(draft.current_version), inputText: draft.input_text, direction: draft.requested_direction, channels: draft.target_channels });
   return review;
+}
+
+async function notifyReviewOpened(input: { reviewId: string; draftId: string; version: number; inputText: string; direction: string | null; channels: string[] }) {
+  const base = process.env.AGENT_AUTOLOOP_URL?.replace(/\/$/, "");
+  const key = process.env.AGENT_AUTOLOOP_SOURCE_KEY;
+  if (!base || !key) return;
+  const detail = JSON.stringify({ reviewId: input.reviewId, draftId: input.draftId, version: input.version, direction: input.direction, channels: input.channels, inputText: input.inputText.slice(0, 3500) });
+  try {
+    const response = await fetch(`${base}/v1/events`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ id: `alsignal-review:${input.reviewId}`, type: "alsignal.draft.review", subject: input.draftId, summary: `Alsignal 草稿 ${input.draftId} 等待审核`, detail }),
+    });
+    if (!response.ok) console.warn(JSON.stringify({ level: "warn", msg: "alsignal review event rejected", status: response.status }));
+  } catch (error) {
+    console.warn(JSON.stringify({ level: "warn", msg: "alsignal review event failed", error: String(error) }));
+  }
 }
 
 export async function decideReview(reviewId: string, decision: "approved" | "changes_requested" | "rejected", feedback: string | null, actor: string) {
   const [review] = await sql`SELECT draft_id FROM review_tasks WHERE id = ${reviewId}`;
   if (!review) return null;
-  const nextStatus = decision === "approved" ? "approved" : decision === "changes_requested" ? "editing" : "rejected";
+  const nextStatus = decision === "approved" ? "approved" : decision === "changes_requested" ? "review" : "rejected";
   const [updated] = await sql.begin(async (tx) => {
     const [row] = await tx`UPDATE review_tasks SET status = ${decision}, reviewer = ${actor}, decision = ${decision}, feedback = ${feedback}, decided_at = now(), updated_at = now() WHERE id = ${reviewId} RETURNING *`;
     await tx`UPDATE content_drafts SET status = ${nextStatus}, updated_at = now() WHERE id = ${review.draft_id}`;
